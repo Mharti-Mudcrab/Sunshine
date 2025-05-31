@@ -12,3 +12,5 @@ Preprocessing is done with the file [PreProcessing.ipynb](PreProcessing.ipynb) w
 
 And outputs the result to a single file:
 - [combined_project_status.csv](combined_project_status.csv)
+
+The rest of the files have been used as a basis of research towards the end result. They contain different angles at atempting to bruteforce optimal clustering or include avenues of research that was not included in the final methodology or findings. 
