@@ -1,4 +1,4 @@
-# The Sunshine group present
+# The Sunshine group presents:
 ## Investigating sustainability indicators of Free Open Source Software projects' (FOSS) relation to Apache Software Foundations decision-making 
 
 This repository contains the results of research done to try to uncover patterns related to code quality and sustainability metrics for a dataset of FOSS projects that are or have been a part of the Apache Foundation or the Apache Foundations incubator.  
