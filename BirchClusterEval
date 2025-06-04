@@ -1,0 +1,206 @@
+import re
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import ast
+from sklearn.cluster import Birch
+from sklearn.manifold import TSNE
+import umap
+from sklearn.preprocessing import LabelEncoder, PowerTransformer
+from sklearn.metrics import adjusted_rand_score
+from sklearn.ensemble import RandomForestClassifier
+import warnings
+
+warnings.filterwarnings('ignore')
+
+DATA_FILE = 'data.csv'
+LABEL_COLUMN = 'status'
+N_CLUSTERS_EXPECTED = 2
+UMAP_N_NEIGHBORS = 15
+UMAP_MIN_DIST = 0.1
+TSNE_PERPLEXITY = 30
+TSNE_N_ITER = 300
+RANDOM_STATE = 42
+
+df_data_full = pd.read_csv(DATA_FILE)
+feature_pattern = r'^(COM|STA|SWQ|TEC|POP)-\d+(\.\d+)?$'
+all_feature_cols = [col for col in df_data_full.columns if re.match(feature_pattern, col)]
+
+df_data = df_data_full.dropna(subset=all_feature_cols + [LABEL_COLUMN]).copy()
+
+for col in all_feature_cols:
+    if col in df_data.columns:
+        if not pd.api.types.is_numeric_dtype(df_data[col]):
+            df_data[col] = pd.to_numeric(df_data[col], errors='coerce')
+
+df_data = df_data.dropna(subset=all_feature_cols + [LABEL_COLUMN]).copy()
+
+birch_results = [
+    {
+        'status_pair': ('bypassed', 'graduated'),
+        'features': ['COM-1', 'COM-2', 'STA-7', 'STA-8', 'STA-9', 'TEC-2', 'SWQ-2.6'],
+        'params': {'n_clusters': 2},
+        'algo_name': 'BIRCH',
+        'original_ari': 0.3028
+    },
+    {
+        'status_pair': ('bypassed', 'retired'),
+        'features': ['COM-1', 'STA-7', 'STA-8', 'TEC-4'],
+        'params': {'n_clusters': 2},
+        'algo_name': 'BIRCH',
+        'original_ari': 0.5790
+    },
+    {
+        'status_pair': ('evolved', 'graduated'),
+        'features': ['COM-2', 'STA-4', 'STA-7', 'STA-9', 'TEC-3'],
+        'params': {'n_clusters': 2},
+        'algo_name': 'BIRCH',
+        'original_ari': 0.3247
+    },
+    {
+        'status_pair': ('evolved', 'retired'),
+        'features': ['COM-1', 'STA-3', 'STA-5', 'STA-7', 'STA-8', 'TEC-4', 'SWQ-1'],
+        'params': {'n_clusters': 2},
+        'algo_name': 'BIRCH',
+        'original_ari': 0.4838
+    },
+    {
+        'status_pair': ('graduated', 'retired'),
+        'features': ['COM-1', 'STA-1', 'STA-2', 'STA-5', 'TEC-1', 'TEC-4', 'SWQ-2.3'],
+        'params': {'n_clusters': 2},
+        'algo_name': 'BIRCH',
+        'original_ari': 0.4987
+    }
+]
+
+def plot_clusters(df_plot, x_col, y_col, title, pair_name, original_ari, recalculated_ari):
+    plt.figure(figsize=(12, 8))
+    scatter = sns.scatterplot(data=df_plot, x=x_col, y=y_col,
+                               hue='Predicted Cluster',
+                               style='True Status',
+                               palette='viridis', s=80, alpha=0.8)
+    
+    plt.legend(title='Legend', bbox_to_anchor=(1.05, 1), loc='upper left')
+    plot_title = f'{title}: {pair_name}\n(Orig ARI: {original_ari:.4f}, Recalc ARI: {recalculated_ari:.4f})'
+    plt.title(plot_title)
+    plt.xlabel(f'{x_col.replace("1"," 1")}')
+    plt.ylabel(f'{y_col.replace("2"," 2")}')
+    plt.tight_layout(rect=[0, 0, 0.85, 1])
+    plt.show()
+
+for result in birch_results:
+    status_pair = result['status_pair']
+    features_list = result['features']
+    birch_params = result['params']
+    original_ari = result['original_ari']
+    status1, status2 = status_pair
+    pair_name = f"{status1} vs {status2}"
+
+    df_pair = df_data[df_data[LABEL_COLUMN].isin(status_pair)].copy()
+    
+    missing_features = [f for f in features_list if f not in df_pair.columns]
+    if missing_features:
+        continue
+    
+    non_numeric_features = [f for f in features_list if not pd.api.types.is_numeric_dtype(df_pair[f])]
+    if non_numeric_features:
+        continue
+    
+    min_points_needed = max(N_CLUSTERS_EXPECTED, UMAP_N_NEIGHBORS + 1, TSNE_PERPLEXITY + 1, 5)
+    if df_pair.shape[0] < min_points_needed:
+        continue
+
+    X_pair = df_pair[features_list]
+    
+    true_labels_str = df_pair[LABEL_COLUMN]
+    le = LabelEncoder()
+    true_labels_encoded = le.fit_transform(true_labels_str)
+
+    scaler = PowerTransformer()
+    X_scaled = scaler.fit_transform(X_pair)
+
+    birch_model = Birch(**birch_params)
+    predicted_labels = birch_model.fit_predict(X_scaled)
+    
+    n_clusters_found = len(np.unique(predicted_labels))
+    if n_clusters_found < birch_params['n_clusters']:
+        continue
+
+    recalculated_ari = adjusted_rand_score(true_labels_encoded, predicted_labels)
+
+    df_with_cluster = X_pair.copy()
+    df_with_cluster['PredictedCluster'] = predicted_labels
+    medians_by_cluster = df_with_cluster.groupby('PredictedCluster')[features_list].median()
+    print(f"\nMedian values of features by Predicted Cluster for {pair_name}:")
+    for cluster_id in sorted(medians_by_cluster.index):
+        label = f"Cluster {cluster_id}"
+        print(f"  {label}:")
+        for feat in features_list:
+            print(f"    {feat}: {medians_by_cluster.loc[cluster_id, feat]:.4f}")
+
+    X_umap = None
+    X_tsne = None
+    
+    effective_umap_neighbors = min(UMAP_N_NEIGHBORS, X_scaled.shape[0] - 1)
+    umap_reducer = umap.UMAP(n_components=2, n_neighbors=effective_umap_neighbors, 
+                            min_dist=UMAP_MIN_DIST, random_state=RANDOM_STATE)
+    X_umap = umap_reducer.fit_transform(X_scaled)
+    
+    effective_perplexity = min(TSNE_PERPLEXITY, X_scaled.shape[0] - 1.1)
+    if effective_perplexity >= 5:
+        tsne_reducer = TSNE(n_components=2, perplexity=effective_perplexity, 
+                           n_iter=TSNE_N_ITER, random_state=RANDOM_STATE, 
+                           init='pca', learning_rate='auto')
+        X_tsne = tsne_reducer.fit_transform(X_scaled)
+
+    df_plot = df_pair[features_list].copy()
+    df_plot['Predicted Cluster'] = [f"Cluster {l}" for l in predicted_labels]
+    df_plot['True Status'] = true_labels_str
+    
+    if X_umap is not None:
+        df_plot['UMAP1'], df_plot['UMAP2'] = X_umap[:, 0], X_umap[:, 1]
+    if X_tsne is not None:
+        df_plot['TSNE1'], df_plot['TSNE2'] = X_tsne[:, 0], X_tsne[:, 1]
+
+    cross_tab = pd.crosstab(df_plot['Predicted Cluster'], df_plot['True Status'])
+    cluster_status_map = {}
+    for cluster_name in cross_tab.index:
+        dominant_status = cross_tab.loc[cluster_name].idxmax()
+        total_in_cluster = cross_tab.loc[cluster_name].sum()
+        count_dominant = cross_tab.loc[cluster_name, dominant_status]
+        purity = (count_dominant / total_in_cluster) * 100 if total_in_cluster > 0 else 0
+        cluster_status_map[cluster_name] = f"{dominant_status} ({purity:.1f}%)"
+
+    for feature in features_list:
+        plt.figure(figsize=(8, 6))
+        sns.boxplot(data=df_plot, x='Predicted Cluster', y=feature, palette='viridis', 
+                   order=sorted(df_plot['Predicted Cluster'].unique()))
+        
+        plot_title = f'Distribution of {feature}\nby Predicted Cluster for {pair_name}'
+        if cluster_status_map:
+            cluster_labels = [f"{c}\n({cluster_status_map.get(c, 'N/A')})" 
+                             for c in sorted(df_plot['Predicted Cluster'].unique())]
+            plt.gca().set_xticklabels(cluster_labels)
+        
+        plt.title(plot_title)
+        plt.xlabel('Predicted Cluster (Dominant True Status)')
+        plt.ylabel(f'Original Value of {feature}')
+        plt.tight_layout()
+        plt.show()
+
+    rf_classifier = RandomForestClassifier(n_estimators=100, random_state=RANDOM_STATE, class_weight='balanced', oob_score=True, n_jobs=-1)
+    rf_classifier.fit(X_scaled, predicted_labels)
+    importances = rf_classifier.feature_importances_
+    rf_importance_df = pd.DataFrame({'Feature': features_list, 'Importance': importances}).sort_values('Importance', ascending=False).reset_index(drop=True)
+    print(rf_importance_df)
+    print(f"  Random Forest OOB Score (Predicting Clusters): {rf_classifier.oob_score_:.4f}")
+    print("-" * 30)
+
+    if X_umap is not None:
+        plot_clusters(df_plot, 'UMAP1', 'UMAP2', 'UMAP Projection of BIRCH Clusters', 
+                     pair_name, original_ari, recalculated_ari)
+    
+    if X_tsne is not None:
+        plot_clusters(df_plot, 'TSNE1', 'TSNE2', 't-SNE Projection of BIRCH Clusters', 
+                     pair_name, original_ari, recalculated_ari)
